@@ -8,6 +8,7 @@ Steps completed
   Step 1 : Project setup & data fetching      (src/data_fetcher.py)
   Step 2 : Returns & volatility engine        (src/risk_engine.py)
   Step 3 : Portfolio construction & metrics   (src/portfolio.py)
+  Step 4 : VaR / CVaR engine                  (src/var_engine.py)
 
 Run:
     python main.py
@@ -36,8 +37,8 @@ from risk_engine import (
 from portfolio import (
     compare_portfolios,
     compute_portfolio_metrics,
-    print_portfolio_summary,
 )
+from var_engine import print_var_report
 
 # ---------------------------------------------------------------------------
 # Portfolio configuration
@@ -46,6 +47,11 @@ from portfolio import (
 TICKERS: list[str] = ["AAPL", "MSFT", "JPM", "GS", "SPY"]
 START_DATE: str = "2020-01-01"
 END_DATE:   str = date.today().isoformat()
+
+WEIGHTS_A: dict[str, float] = {t: 0.20 for t in TICKERS}          # equal weight
+WEIGHTS_B: dict[str, float] = {                                      # tech-overweight
+    "AAPL": 0.35, "MSFT": 0.30, "JPM": 0.15, "GS": 0.10, "SPY": 0.10
+}
 
 
 # ---------------------------------------------------------------------------
@@ -68,27 +74,25 @@ def main() -> dict:
     """
     Orchestrate all completed steps of the Portfolio Risk Analyzer.
 
-    Returns a dict of all computed artefacts so this module can be
-    imported and called interactively (e.g. from a Jupyter notebook).
+    Returns a dict of all computed artefacts — prices, returns,
+    portfolio time series, metrics, and VaR results — so this module
+    can be imported and called interactively (e.g. from a Jupyter notebook).
     """
 
     # ── STEP 1: Fetch prices ─────────────────────────────────────────────────
     section("STEP 1 — DATA FETCHING")
-
     prices = fetch_stock_data(
         tickers=TICKERS,
         start_date=START_DATE,
         end_date=END_DATE,
         save_path="data/raw_prices.csv",
     )
-
-    print(f"\n  Shape  : {prices.shape[0]} rows x {prices.shape[1]} columns")
-    print(f"  Dates  : {prices.index.min().date()} -> {prices.index.max().date()}")
-    print(f"  Nulls  : {prices.isna().sum().sum()}")
+    print(f"\n  Shape : {prices.shape[0]} rows x {prices.shape[1]} columns")
+    print(f"  Dates : {prices.index.min().date()} -> {prices.index.max().date()}")
+    print(f"  Nulls : {prices.isna().sum().sum()}")
 
     # ── STEP 2: Returns & volatility ─────────────────────────────────────────
     section("STEP 2 — RETURNS & VOLATILITY ANALYSIS")
-
     print("\n  [1/4]  Computing daily log returns ...")
     log_returns = compute_returns(prices)
 
@@ -98,26 +102,48 @@ def main() -> dict:
     print("\n  [3/4]  Computing correlation matrix ...")
     corr_matrix = compute_correlation_matrix(log_returns)
 
-    print("\n  [4/4]  Computing rolling 60-day correlation: JPM vs GS ...")
+    print("\n  [4/4]  Rolling 60-day correlation: JPM vs GS ...")
     jpm_gs_rolling_corr = compute_rolling_correlation(
         log_returns, ticker_a="JPM", ticker_b="GS", window=60
     )
-    print(f"  Latest JPM-GS 60-day correlation : "
-          f"{jpm_gs_rolling_corr.dropna().iloc[-1]:.3f}")
+    print(f"  Latest JPM-GS 60-day corr : {jpm_gs_rolling_corr.dropna().iloc[-1]:.3f}")
 
     print("\n── Descriptive Statistics ───────────────────────────────────────")
     print_stats_summary(log_returns, vol_summary)
 
     # ── STEP 3: Portfolio construction ───────────────────────────────────────
     section("STEP 3 — PORTFOLIO CONSTRUCTION")
-
     portfolio_a_df, portfolio_b_df = compare_portfolios(
         log_returns, portfolio_value=100_000
     )
-
-    # Compute metrics for use in later steps (VaR, reporting)
     metrics_a = compute_portfolio_metrics(portfolio_a_df)
     metrics_b = compute_portfolio_metrics(portfolio_b_df)
+
+    # ── STEP 4: VaR / CVaR analysis ──────────────────────────────────────────
+    section("STEP 4 — VALUE AT RISK ANALYSIS")
+
+    print("\n  Running VaR report for Portfolio A (Equal Weight) ...")
+    var_results_a = print_var_report(
+        portfolio_returns=portfolio_a_df["daily_return"],
+        returns_df=log_returns,
+        weights=WEIGHTS_A,
+        portfolio_value=100_000,
+        portfolio_name="Portfolio A — Equal Weight",
+    )
+
+    print("\n  Running VaR report for Portfolio B (Tech Overweight) ...")
+    var_results_b = print_var_report(
+        portfolio_returns=portfolio_b_df["daily_return"],
+        returns_df=log_returns,
+        weights=WEIGHTS_B,
+        portfolio_value=100_000,
+        portfolio_name="Portfolio B — Tech Overweight",
+    )
+
+    # Named variables for Step 5 (charting & PDF report)
+    rolling_var_series   = var_results_a["rolling_var"]
+    backtest_results_a   = var_results_a["backtest"]
+    backtest_results_b   = var_results_b["backtest"]
 
     # ── Summary of all saved files ───────────────────────────────────────────
     section("OUTPUTS WRITTEN")
@@ -129,12 +155,13 @@ def main() -> dict:
         "data/correlation_matrix.csv",
         "data/portfolio_a_equal.csv",
         "data/portfolio_b_custom.csv",
+        "data/rolling_var.csv",
     ]
     for path in outputs:
         status = "OK     " if os.path.exists(path) else "MISSING"
         print(f"  [{status}]  {path}")
 
-    print("\n  Step 3 complete. Ready for Step 4 (VaR / CVaR).\n")
+    print("\n  Step 4 complete. Ready for Step 5 (Charts & PDF Report).\n")
 
     return {
         # Step 1
@@ -149,6 +176,12 @@ def main() -> dict:
         "portfolio_b_df":       portfolio_b_df,
         "metrics_a":            metrics_a,
         "metrics_b":            metrics_b,
+        # Step 4
+        "var_results_a":        var_results_a,
+        "var_results_b":        var_results_b,
+        "rolling_var_series":   rolling_var_series,
+        "backtest_results_a":   backtest_results_a,
+        "backtest_results_b":   backtest_results_b,
     }
 
 
