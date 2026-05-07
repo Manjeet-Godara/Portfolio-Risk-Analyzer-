@@ -3,10 +3,11 @@ main.py
 -------
 Entry point for the Portfolio Risk Analyzer.
 
-Step 1: Project Setup & Data Fetching
-    - Defines the portfolio universe and date range.
-    - Fetches adjusted closing prices via data_fetcher.fetch_stock_data().
-    - Runs basic diagnostics on the returned DataFrame.
+Steps completed
+---------------
+  Step 1 : Project setup & data fetching      (src/data_fetcher.py)
+  Step 2 : Returns & volatility engine        (src/risk_engine.py)
+  Step 3 : Portfolio construction & metrics   (src/portfolio.py)
 
 Run:
     python main.py
@@ -20,43 +21,60 @@ import os
 from datetime import date
 
 # ---------------------------------------------------------------------------
-# Make sure Python can find modules inside src/ regardless of where the
-# script is launched from.
+# Ensure src/ is importable regardless of working directory
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from data_fetcher import fetch_stock_data  # noqa: E402  (after sys.path insert)
-
+from data_fetcher import fetch_stock_data
+from risk_engine import (
+    compute_returns,
+    compute_volatility,
+    compute_correlation_matrix,
+    compute_rolling_correlation,
+    print_stats_summary,
+)
+from portfolio import (
+    compare_portfolios,
+    compute_portfolio_metrics,
+    print_portfolio_summary,
+)
 
 # ---------------------------------------------------------------------------
 # Portfolio configuration
 # ---------------------------------------------------------------------------
 
 TICKERS: list[str] = ["AAPL", "MSFT", "JPM", "GS", "SPY"]
-"""
-Tickers chosen to represent:
-  AAPL, MSFT — large-cap tech (growth)
-  JPM, GS    — major US banks (financials / risk exposure)
-  SPY        — S&P 500 ETF (benchmark)
-"""
-
 START_DATE: str = "2020-01-01"
-END_DATE:   str = date.today().isoformat()   # always uses today dynamically
+END_DATE:   str = date.today().isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
+
+def section(title: str) -> None:
+    """Print a clearly visible section header to stdout."""
+    bar = "=" * 60
+    print(f"\n{bar}")
+    print(f"  {title}")
+    print(bar)
 
 
 # ---------------------------------------------------------------------------
 # Main routine
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def main() -> dict:
     """
-    Orchestrates Step 1 of the Portfolio Risk Analyzer:
-      1. Fetch and clean historical price data.
-      2. Display head / tail rows for a quick sanity-check.
-      3. Print DataFrame-level diagnostics (shape, date range, null counts).
+    Orchestrate all completed steps of the Portfolio Risk Analyzer.
+
+    Returns a dict of all computed artefacts so this module can be
+    imported and called interactively (e.g. from a Jupyter notebook).
     """
 
-    # ── 1. Fetch data ───────────────────────────────────────────────────────
+    # ── STEP 1: Fetch prices ─────────────────────────────────────────────────
+    section("STEP 1 — DATA FETCHING")
+
     prices = fetch_stock_data(
         tickers=TICKERS,
         start_date=START_DATE,
@@ -64,38 +82,76 @@ def main() -> None:
         save_path="data/raw_prices.csv",
     )
 
-    # ── 2. Head / tail preview ───────────────────────────────────────────────
-    print("\n── First 5 rows ─────────────────────────────────────────────────")
-    print(prices.head().to_string())
+    print(f"\n  Shape  : {prices.shape[0]} rows x {prices.shape[1]} columns")
+    print(f"  Dates  : {prices.index.min().date()} -> {prices.index.max().date()}")
+    print(f"  Nulls  : {prices.isna().sum().sum()}")
 
-    print("\n── Last 5 rows ──────────────────────────────────────────────────")
-    print(prices.tail().to_string())
+    # ── STEP 2: Returns & volatility ─────────────────────────────────────────
+    section("STEP 2 — RETURNS & VOLATILITY ANALYSIS")
 
-    # ── 3. DataFrame diagnostics ─────────────────────────────────────────────
-    print("\n── DataFrame Diagnostics ────────────────────────────────────────")
+    print("\n  [1/4]  Computing daily log returns ...")
+    log_returns = compute_returns(prices)
 
-    shape = prices.shape
-    print(f"  Shape          : {shape[0]} rows × {shape[1]} columns")
-    print(f"  Min date       : {prices.index.min().date()}")
-    print(f"  Max date       : {prices.index.max().date()}")
+    print("\n  [2/4]  Computing volatility ...")
+    vol_summary = compute_volatility(log_returns, window_short=30, window_long=60)
 
-    null_counts = prices.isna().sum()
-    print("\n  Null counts per ticker:")
-    for ticker, count in null_counts.items():
-        status = "✓" if count == 0 else "✗"
-        print(f"    {status} {ticker:>6s} : {count}")
+    print("\n  [3/4]  Computing correlation matrix ...")
+    corr_matrix = compute_correlation_matrix(log_returns)
 
-    total_nulls = null_counts.sum()
-    print(f"\n  Total nulls across all columns : {total_nulls}")
+    print("\n  [4/4]  Computing rolling 60-day correlation: JPM vs GS ...")
+    jpm_gs_rolling_corr = compute_rolling_correlation(
+        log_returns, ticker_a="JPM", ticker_b="GS", window=60
+    )
+    print(f"  Latest JPM-GS 60-day correlation : "
+          f"{jpm_gs_rolling_corr.dropna().iloc[-1]:.3f}")
 
-    if total_nulls == 0:
-        print("\n  ✓  Data is clean and ready for Step 2 analysis.\n")
-    else:
-        print("\n  ✗  Warning: unexpected nulls remain — review data_fetcher.\n")
+    print("\n── Descriptive Statistics ───────────────────────────────────────")
+    print_stats_summary(log_returns, vol_summary)
+
+    # ── STEP 3: Portfolio construction ───────────────────────────────────────
+    section("STEP 3 — PORTFOLIO CONSTRUCTION")
+
+    portfolio_a_df, portfolio_b_df = compare_portfolios(
+        log_returns, portfolio_value=100_000
+    )
+
+    # Compute metrics for use in later steps (VaR, reporting)
+    metrics_a = compute_portfolio_metrics(portfolio_a_df)
+    metrics_b = compute_portfolio_metrics(portfolio_b_df)
+
+    # ── Summary of all saved files ───────────────────────────────────────────
+    section("OUTPUTS WRITTEN")
+    outputs = [
+        "data/raw_prices.csv",
+        "data/daily_returns.csv",
+        "data/daily_returns_combined.csv",
+        "data/rolling_volatility.csv",
+        "data/correlation_matrix.csv",
+        "data/portfolio_a_equal.csv",
+        "data/portfolio_b_custom.csv",
+    ]
+    for path in outputs:
+        status = "OK     " if os.path.exists(path) else "MISSING"
+        print(f"  [{status}]  {path}")
+
+    print("\n  Step 3 complete. Ready for Step 4 (VaR / CVaR).\n")
+
+    return {
+        # Step 1
+        "prices":               prices,
+        # Step 2
+        "log_returns":          log_returns,
+        "vol_summary":          vol_summary,
+        "corr_matrix":          corr_matrix,
+        "jpm_gs_rolling_corr":  jpm_gs_rolling_corr,
+        # Step 3
+        "portfolio_a_df":       portfolio_a_df,
+        "portfolio_b_df":       portfolio_b_df,
+        "metrics_a":            metrics_a,
+        "metrics_b":            metrics_b,
+    }
 
 
-# ---------------------------------------------------------------------------
-# Guard: only run when executed directly (not when imported)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     main()
