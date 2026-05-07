@@ -178,7 +178,7 @@ temp/
 # Data files
 data/
 datasets/
-
+outputs/
 # TensorBoard
 runs/
 wandb/
